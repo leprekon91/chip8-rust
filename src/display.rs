@@ -2,7 +2,6 @@
  * @file display.rs
  * @brief Display module to draw whatever is in memmory to the CLI
  */
-use std::io::{self, Write};
 
 pub struct Display {
     pub width: usize,
@@ -23,6 +22,16 @@ impl Display {
         for i in 0..self.buffer.len() {
             self.buffer[i] = 0;
         }
+    }
+
+    pub fn get_pixel(&self, x: usize, y: usize) -> u8 {
+        let index = (x + (y * self.width)) % self.buffer.len();
+        self.buffer[index]
+    }
+
+    pub fn set_pixel(&mut self, x: usize, y: usize, value: u8) {
+        let index = (x + (y * self.width)) % self.buffer.len();
+        self.buffer[index] = value;
     }
 
     pub fn toggle_pixel(&mut self, x: usize, y: usize) -> bool {
@@ -48,7 +57,7 @@ impl Display {
     }
 
     pub fn render(&self) {
-        print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
+        print!("{esc}[0m{esc}[32m{esc}[2J{esc}[1;1H", esc = 27 as char);
 
         for i in 0..self.buffer.len() {
             if i % self.width == 0 {
@@ -60,6 +69,5 @@ impl Display {
                 print!("░");
             }
         }
-        
     }
 }
