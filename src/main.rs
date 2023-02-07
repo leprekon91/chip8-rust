@@ -1,15 +1,14 @@
-mod display;
+mod cpu;
 
-use display::*;
+use cpu::Cpu;
 use std::{thread, time};
 
 fn main() {
-    let mut display = Display::new(64, 32);
-    
-    for i in 0..64 {
-        display.toggle_pixel(i, 10);
-        display.render();
+    let cpu = Cpu::new();
+    let keypad = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0xA, 0xB, 0xC, 0xD, 0xE, 0xF];
+    cpu.cycle(keypad);
 
-        thread::sleep(time::Duration::from_millis(200));
-    }
+    thread::sleep(time::Duration::from_millis(200));
+ 
+    
 }
