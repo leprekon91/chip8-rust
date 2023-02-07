@@ -1,10 +1,15 @@
-mod stack;
+mod display;
 
-use stack::*;
+use display::*;
+use std::{thread, time};
+
 fn main() {
-    println!("Hello, world!");
-    let mut stack: Stack<isize> = Stack::new();
-    stack.push(1);
-    let item = stack.pop();
-    assert_eq!(item.unwrap(), 1);
+    let mut display = Display::new(64, 32);
+    
+    for i in 0..64 {
+        display.toggle_pixel(i, 10);
+        display.render();
+
+        thread::sleep(time::Duration::from_millis(200));
+    }
 }
