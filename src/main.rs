@@ -1,16 +1,10 @@
-use cpu::Cpu;
+mod stack;
 
-mod cpu;
-// mod keypad;
-// mod display;
-
-
+use stack::*;
 fn main() {
-    let mut cpu = Cpu::new();
-
-    cpu.load_program("roms/pong.ch8");
-
-    'main : loop {
-        cpu.cycle();
-    }
+    println!("Hello, world!");
+    let mut stack: Stack<isize> = Stack::new();
+    stack.push(1);
+    let item = stack.pop();
+    assert_eq!(item.unwrap(), 1);
 }
