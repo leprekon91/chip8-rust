@@ -1,5 +1,9 @@
 use rand;
 use rand::Rng;
+
+use display;
+use font;
+use stack;
 use std::{thread, time};
 
 use display::Display;
@@ -41,6 +45,12 @@ enum PcInstructions {
     Next,
     Skip,
     Jump(usize),
+}
+
+struct OutputState {
+    display: Display,
+    display_changed: bool,
+    beep: bool,
 }
 
 impl PcInstructions {
@@ -108,7 +118,7 @@ impl Cpu {
         );
 
         // break apart parameters o the instruction
-        let nnn = (opcode & 0x0FFF) as usize;
+        let nnn = (opcode & 0x0FFF) as u16;
         let kk = (opcode & 0x00FF) as u8;
         let x = nibbles.1 as usize;
         let y = nibbles.2 as usize;
@@ -176,15 +186,15 @@ impl Cpu {
 
     // JP addr: Jump to location nnn.
     // The interpreter sets the program counter to nnn.
-    fn op_1nnn(&mut self, nnn: usize) -> PcInstructions {
-        PcInstructions::Jump(nnn)
+    fn op_1nnn(&mut self, nnn: u16) -> PcInstructions {
+        PcInstructions::Jump(nnn.into())
     }
 
     // CALL addr: Call subroutine at nnn.
     // The interpreter pushes the current PC to the stack. The PC is then set to nnn.
-    fn op_2nnn(&mut self, nnn: usize) -> PcInstructions {
+    fn op_2nnn(&mut self, nnn: u16) -> PcInstructions {
         self.stack.push(self.program_counter);
-        PcInstructions::Jump(nnn)
+        PcInstructions::Jump(nnn.into())
     }
 
     // SE Vx, byte: Skip next instruction if registers[x] = kk.
@@ -231,14 +241,14 @@ impl Cpu {
     // Adds the value kk to the value of register registers[x], then stores the result in registers[x].
     fn op_7xkk(&mut self, x: usize, kk: u8) -> PcInstructions {
         // wrappping add: 255 + 1 = 0, prevent panic when register overflows
-        self.registers[x] = self.registers[x].wrapping_add(kk);
+        self.v_registers[x] = self.v_registers[x].wrapping_add(kk);
         PcInstructions::Next
     }
 
     // LD Vx, Vy: Set registers[x] = registers[y].
     // Stores the value of register registers[y] in register registers[x].
     fn op_8xy0(&mut self, x: usize, y: usize) -> PcInstructions {
-        self.registers[x] = self.registers[y];
+        self.v_registers[x] = self.v_registers[y];
         PcInstructions::Next
     }
 
@@ -246,7 +256,7 @@ impl Cpu {
     // Performs a bitwise OR on the values of registers[x] and registers[y],
     // then stores the result in registers[x].
     fn op_8xy1(&mut self, x: usize, y: usize) -> PcInstructions {
-        self.registers[x] |= self.registers[y];
+        self.v_registers[x] |= self.v_registers[y];
         PcInstructions::Next
     }
 
@@ -254,7 +264,7 @@ impl Cpu {
     // Performs a bitwise AND on the values of registers[x] and registers[y],
     // then stores the result in registers[x].
     fn op_8xy2(&mut self, x: usize, y: usize) -> PcInstructions {
-        self.registers[x] &= self.registers[y];
+        self.v_registers[x] &= self.v_registers[y];
         PcInstructions::Next
     }
 
@@ -262,7 +272,7 @@ impl Cpu {
     // Performs a bitwise exclusive OR on the values of registers[x] and registers[y],
     // then stores the result in registers[x].
     fn op_8xy3(&mut self, x: usize, y: usize) -> PcInstructions {
-        self.registers[x] ^= self.registers[y];
+        self.v_registers[x] ^= self.v_registers[y];
         PcInstructions::Next
     }
 
@@ -272,10 +282,10 @@ impl Cpu {
     fn op_8xy4(&mut self, x: usize, y: usize) -> PcInstructions {
         // If the result is greater than 8 bits (i.e., > 255,) registers[x] is set to the lowest 8 bits of the result,
         // and VF is set to 1, otherwise 0.
-        let (result, overflow) = self.registers[x].overflowing_add(self.registers[y]);
-        self.registers[x] = result;
+        let (result, overflow) = self.v_registers[x].overflowing_add(self.v_registers[y]);
+        self.v_registers[x] = result;
 
-        self.registers[0xF] = if overflow { 1 } else { 0 };
+        self.v_registers[0xF] = if overflow { 1 } else { 0 };
 
         PcInstructions::Next
     }
@@ -284,12 +294,12 @@ impl Cpu {
     // registers[y] is subtracted from registers[x], and the results stored in registers[x].
     fn op_8xy5(&mut self, x: usize, y: usize) -> PcInstructions {
         // If registers[x] > registers[y], then VF is set to 1, otherwise 0.
-        self.registers[0xF] = if self.registers[x] > self.registers[y] {
+        self.v_registers[0xF] = if self.v_registers[x] > self.v_registers[y] {
             1
         } else {
             0
         };
-        self.registers[x] = self.registers[x].wrapping_sub(self.registers[y]);
+        self.v_registers[x] = self.v_registers[x].wrapping_sub(self.v_registers[y]);
 
         PcInstructions::Next
     }
@@ -298,8 +308,8 @@ impl Cpu {
     // If the least-significant bit of registers[x] is 1, then VF is set to 1, otherwise 0.
     // Then registers[x] is divided by 2.
     fn op_8xy6(&mut self, x: usize, _y: usize) -> PcInstructions {
-        self.registers[0xF] = self.registers[x] & 0x1;
-        self.registers[x] >>= 1;
+        self.v_registers[0xF] = self.v_registers[x] & 0x1;
+        self.v_registers[x] >>= 1;
 
         PcInstructions::Next
     }
@@ -308,12 +318,12 @@ impl Cpu {
     // If registers[y] > registers[x], then VF is set to 1, otherwise 0.
     // Then registers[x] is subtracted from registers[y], and the results stored in registers[x].
     fn op_8xy7(&mut self, x: usize, y: usize) -> PcInstructions {
-        self.registers[0xF] = if self.registers[y] > self.registers[x] {
+        self.v_registers[0xF] = if self.v_registers[y] > self.v_registers[x] {
             1
         } else {
             0
         };
-        self.registers[x] = self.registers[y].wrapping_sub(self.registers[x]);
+        self.v_registers[x] = self.v_registers[y].wrapping_sub(self.v_registers[x]);
 
         PcInstructions::Next
     }
@@ -322,8 +332,8 @@ impl Cpu {
     // If the most-significant bit of registers[x] is 1, then VF is set to 1, otherwise to 0.
     // Then registers[x] is multiplied by 2.
     fn op_8xye(&mut self, x: usize, _y: usize) -> PcInstructions {
-        self.registers[0xF] = self.registers[x] >> 7;
-        self.registers[x] <<= 1;
+        self.v_registers[0xF] = self.v_registers[x] >> 7;
+        self.v_registers[x] <<= 1;
 
         PcInstructions::Next
     }
@@ -332,7 +342,7 @@ impl Cpu {
     // The values of registers[x] and registers[y] are compared, and if they are not equal,
     // the program counter is increased by 2.
     fn op_9xy0(&mut self, x: usize, y: usize) -> PcInstructions {
-        if self.registers[x] != self.registers[y] {
+        if self.v_registers[x] != self.v_registers[y] {
             PcInstructions::Skip
         } else {
             PcInstructions::Next
@@ -349,7 +359,8 @@ impl Cpu {
     // JP V0, addr: Jump to location nnn + registers[0].
     // The program counter is set to nnn plus the value of registers[0].
     fn op_bnnn(&mut self, nnn: u16) -> PcInstructions {
-        PcInstructions::Jump(nnn + self.registers[0] as u16)
+        let addr = nnn + self.v_registers[0] as u16;
+        PcInstructions::Jump(addr.into())
     }
 
     // RND Vx, byte: Set registers[x] = random byte AND kk.
@@ -357,7 +368,7 @@ impl Cpu {
     // The results are stored in registers[x].
     fn op_cxkk(&mut self, x: usize, kk: u8) -> PcInstructions {
         let mut rng = rand::thread_rng();
-        self.registers[x] = rng.gen::<u8>() & kk;
+        self.v_registers[x] = rng.gen::<u8>() & kk;
         PcInstructions::Next
     }
 
@@ -369,18 +380,18 @@ impl Cpu {
     // it is set to 0. If the sprite is positioned so part of it is outside
     // the coordinates of the display, it wraps around to the opposite side
     // of the screen.
-    fn op_dxyn(&mut self, x: usize, y: usize, n: usize) {
-        self.registers[0xF] = 0;
+    fn op_dxyn(&mut self, x: usize, y: usize, n: usize) -> PcInstructions {
+        self.v_registers[0xF] = 0;
         for byte in 0..n {
             let sprite_byte = self.memory[self.index_register as usize + byte];
             for bit in 0..8 {
-                let x_coord = (self.registers[x] as usize + bit) % DISPLAY_WIDTH;
-                let y_coord = (self.registers[y] as usize + byte) % DISPLAY_HEIGHT;
+                let x_coord = (self.v_registers[x] as usize + bit) % DISPLAY_WIDTH;
+                let y_coord = (self.v_registers[y] as usize + byte) % DISPLAY_HEIGHT;
                 let pixel = self.display.get_pixel(x_coord, y_coord);
                 let sprite_pixel = sprite_byte & (0x80 >> bit);
                 if sprite_pixel != 0 {
                     if pixel == 1 {
-                        self.registers[0xF] = 1;
+                        self.v_registers[0xF] = 1;
                     }
                     self.display.set_pixel(x_coord, y_coord, pixel ^ 1);
                 }
@@ -395,20 +406,20 @@ impl Cpu {
     // Checks the keyboard, and if the key corresponding to the value of registers[x] is currently in the down position,
     // PC is increased by 2.
     fn op_ex9e(&mut self, x: usize) -> PcInstructions {
-        PcInstructions::skip_if(self.keypad[self.v[x] as usize])
+        PcInstructions::skip_if(self.keypad[self.v_registers[x] as usize])
     }
 
     // SKNP Vx: Skip next instruction if key with the value of registers[x] is not pressed.
     // Checks the keyboard, and if the key corresponding to the value of registers[x] is currently in the up position,
     // PC is increased by 2.
     fn op_exa1(&mut self, x: usize) -> PcInstructions {
-        PcInstructions::skip_if(!self.keypad[self.v[x] as usize])
+        PcInstructions::skip_if(!self.keypad[self.v_registers[x] as usize])
     }
 
     // LD Vx, DT: Set registers[x] = delay_timer.
     // The value of DT is placed into registers[x].
     fn op_fx07(&mut self, x: usize) -> PcInstructions {
-        self.registers[x] = self.delay_timer;
+        self.v_registers[x] = self.delay_timer;
         PcInstructions::Next
     }
 
@@ -423,21 +434,21 @@ impl Cpu {
     // LD DT, Vx: Set delay_timer = registers[x].
     // DT is set equal to the value of registers[x].
     fn op_fx15(&mut self, x: usize) -> PcInstructions {
-        self.delay_timer = self.registers[x];
+        self.delay_timer = self.v_registers[x];
         PcInstructions::Next
     }
 
     // LD ST, Vx: Set sound_timer = registers[x].
     // ST is set equal to the value of registers[x].
     fn op_fx18(&mut self, x: usize) -> PcInstructions {
-        self.sound_timer = self.registers[x];
+        self.sound_timer = self.v_registers[x];
         PcInstructions::Next
     }
 
     // ADD I, Vx: Set I = I + registers[x].
     // The values of registers[x] and Index Register are added, and the results are stored in Index Register.
     fn op_fx1e(&mut self, x: usize) -> PcInstructions {
-        self.index_register += self.registers[x] as u16;
+        self.index_register += self.v_registers[x] as u16;
         PcInstructions::Next
     }
 
@@ -445,7 +456,7 @@ impl Cpu {
     // The value of registers[x] is used as the index into the font set.
     // The value of Index Register is set to the location for the hexadecimal sprite corresponding to the value of registers[x].
     fn op_fx29(&mut self, x: usize) -> PcInstructions {
-        self.index_register = (self.registers[x] as u16) * 5;
+        self.index_register = (self.v_registers[x] as u16) * 5;
         PcInstructions::Next
     }
 
@@ -453,7 +464,7 @@ impl Cpu {
     // The interpreter takes the decimal value of registers[x], and places the hundreds digit in memory at location in Index Register,
     // the tens digit at location I+1, and the ones digit at location I+2.
     fn op_fx33(&mut self, x: usize) -> PcInstructions {
-        let value = self.registers[x];
+        let value = self.v_registers[x];
         self.memory[self.index_register as usize] = value / 100;
         self.memory[self.index_register as usize + 1] = (value / 10) % 10;
         self.memory[self.index_register as usize + 2] = (value % 100) % 10;
@@ -464,7 +475,7 @@ impl Cpu {
     // The interpreter copies the values of registers V0 through registers[x] into memory, starting at the address in Index Register.
     fn op_fx55(&mut self, x: usize) -> PcInstructions {
         for i in 0..=x {
-            self.memory[self.index_register as usize + i] = self.registers[i];
+            self.memory[self.index_register as usize + i] = self.v_registers[i];
         }
         PcInstructions::Next
     }
@@ -473,13 +484,13 @@ impl Cpu {
     // The interpreter reads values from memory starting at location I into registers V0 through registers[x].
     fn op_fx65(&mut self, x: usize) -> PcInstructions {
         for i in 0..=x {
-            self.registers[i] = self.memory[self.index_register as usize + i];
+            self.v_registers[i] = self.memory[self.index_register as usize + i];
         }
         PcInstructions::Next
     }
 
     // MAIN LOOP
-    pub fn cycle(&mut self, keypad: &[bool; 16]) {
+    pub fn cycle(&mut self, keypad: [bool; 16]) -> OutputState {
         self.keypad = keypad;
         self.display_changed = false;
 
@@ -487,22 +498,22 @@ impl Cpu {
             for i in 0..keypad.len() {
                 if keypad[i] {
                     self.keypad_waiting = false;
-                    self.v[self.keypad_register] = i as u8;
+                    self.v_registers[self.keypad_register] = i as u8;
                     break;
                 }
             }
         } else {
             // Fetch Opcode
-            let opcode = fetch_opcode();
+            let opcode = self.fetch_opcode();
 
             // Run Opcode instruction
-            let pc_instruction = decode_opcode(opcode);
+            let pc_instruction = self.exec_opcode(opcode);
 
             // Update Program Counter
             match pc_instruction {
-                PcInstructions::Next => self.program_counter += OPCODE_SIZE,
-                PcInstructions::Skip => self.program_counter += 2 * OPCODE_SIZE,
-                PcInstructions::Jump(addr) => self.program_counter = addr,
+                PcInstructions::Next => self.program_counter += OPCODE_SIZE.try_into().unwrap(),
+                PcInstructions::Skip => self.program_counter += 2 * OPCODE_SIZE.try_into().unwrap(),
+                PcInstructions::Jump(addr) => self.program_counter = addr.try_into().unwrap(),
             }
 
             // Update Timers
