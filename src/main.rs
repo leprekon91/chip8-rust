@@ -6,8 +6,9 @@ use cpu::Cpu;
 use std::{thread, time};
 
 fn main() {
-    let cpu = Cpu::new();
+    let mut cpu =  Cpu::new();
     let keypad = [true; 16];
+   // TODO: load rom 
     // TODO: poll keyboard
 
     let outputState = cpu.cycle(keypad);

@@ -4,8 +4,6 @@ use rand::Rng;
 use crate::font;
 use font::FONT_SET;
 
-use std::{thread, time};
-
 const MEMORY_SIZE: usize = 4096;
 
 const DISPLAY_HEIGHT: usize = 32;
@@ -17,12 +15,10 @@ const OPCODE_SIZE: usize = 2;
 
 const PROGRAM_START: usize = 0x200;
 
-const CLOCK_SPEED: u64 = 500;
-
 pub struct Cpu {
     memory: [u8; MEMORY_SIZE],
     v_registers: [u8; REGISTER_COUNT], // V0 - VF
-    index_register: u16,
+    index_register: usize,
     program_counter: usize,
     stack: [usize; 16],
     stack_pointer: usize,
@@ -44,7 +40,7 @@ enum PcInstructions {
     Jump(usize),
 }
 
-struct OutputState {
+pub struct OutputState {
     display: [[u8; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
     display_changed: bool,
     beep: bool,
@@ -75,7 +71,7 @@ impl Cpu {
             v_registers: [0; REGISTER_COUNT], // V0 - VF init to 0
             index_register: 0,
             program_counter: PROGRAM_START as usize,
-            stack: [0; 16],
+            stack: [0; STACK_SIZE],
             stack_pointer: 0,
             delay_timer: 0,
             sound_timer: 0,
@@ -106,7 +102,7 @@ impl Cpu {
         return (first_byte << 8) | second_byte;
     }
 
-    fn exec_opcode(&self, opcode: u16) -> PcInstructions {
+    fn exec_opcode(&mut self, opcode: u16) -> PcInstructions {
         // nibbles = HEX Digits of the opcode
         let nibbles = (
             (opcode & 0xF000) >> 12 as u8,
@@ -116,7 +112,7 @@ impl Cpu {
         );
 
         // break apart parameters o the instruction
-        let nnn = (opcode & 0x0FFF) as u16;
+        let nnn = (opcode & 0x0FFF) as usize;
         let kk = (opcode & 0x00FF) as u8;
         let x = nibbles.1 as usize;
         let y = nibbles.2 as usize;
@@ -169,7 +165,7 @@ impl Cpu {
      */
 
     // CLS: Clear the display.
-    fn op_00e0(&self) -> PcInstructions {
+    fn op_00e0(&mut self) -> PcInstructions {
         for y in 0..DISPLAY_HEIGHT {
             for x in 0..DISPLAY_WIDTH {
                 self.display[y][x] = 0;
@@ -188,13 +184,13 @@ impl Cpu {
 
     // JP addr: Jump to location nnn.
     // The interpreter sets the program counter to nnn.
-    fn op_1nnn(&mut self, nnn: u16) -> PcInstructions {
+    fn op_1nnn(&mut self, nnn: usize) -> PcInstructions {
         PcInstructions::Jump(nnn.into())
     }
 
     // CALL addr: Call subroutine at nnn.
     // The interpreter pushes the current PC to the stack. The PC is then set to nnn.
-    fn op_2nnn(&mut self, nnn: u16) -> PcInstructions {
+    fn op_2nnn(&mut self, nnn: usize) -> PcInstructions {
         self.stack[self.stack_pointer] = self.program_counter + (OPCODE_SIZE);
         self.stack_pointer += 1;
         PcInstructions::Jump(nnn.into())
@@ -354,15 +350,15 @@ impl Cpu {
 
     // LD I, addr: Set I = nnn.
     // The value of Index register is set to nnn.
-    fn op_annn(&mut self, nnn: u16) -> PcInstructions {
+    fn op_annn(&mut self, nnn: usize) -> PcInstructions {
         self.index_register = nnn;
         PcInstructions::Next
     }
 
     // JP V0, addr: Jump to location nnn + registers[0].
     // The program counter is set to nnn plus the value of registers[0].
-    fn op_bnnn(&mut self, nnn: u16) -> PcInstructions {
-        let addr = nnn + self.v_registers[0] as u16;
+    fn op_bnnn(&mut self, nnn: usize) -> PcInstructions {
+        let addr = nnn + self.v_registers[0] as usize;
         PcInstructions::Jump(addr.into())
     }
 
@@ -445,7 +441,8 @@ impl Cpu {
     // ADD I, Vx: Set I = I + registers[x].
     // The values of registers[x] and Index Register are added, and the results are stored in Index Register.
     fn op_fx1e(&mut self, x: usize) -> PcInstructions {
-        self.index_register += self.v_registers[x] as u16;
+        self.index_register += self.v_registers[x] as usize;
+        self.v_registers[0x0f] = if self.index_register > 0x0F00 { 1 } else { 0 };
         PcInstructions::Next
     }
 
@@ -453,7 +450,7 @@ impl Cpu {
     // The value of registers[x] is used as the index into the font set.
     // The value of Index Register is set to the location for the hexadecimal sprite corresponding to the value of registers[x].
     fn op_fx29(&mut self, x: usize) -> PcInstructions {
-        self.index_register = (self.v_registers[x] as u16) * 5;
+        self.index_register = (self.v_registers[x] as usize) * 5;
         PcInstructions::Next
     }
 
@@ -508,9 +505,9 @@ impl Cpu {
 
             // Update Program Counter
             match pc_instruction {
-                PcInstructions::Next => self.program_counter += OPCODE_SIZE.try_into().unwrap(),
-                PcInstructions::Skip => self.program_counter += 2 * OPCODE_SIZE.try_into().unwrap(),
-                PcInstructions::Jump(addr) => self.program_counter = addr.try_into().unwrap(),
+                PcInstructions::Next => self.program_counter += OPCODE_SIZE,
+                PcInstructions::Skip => self.program_counter += 2 * OPCODE_SIZE,
+                PcInstructions::Jump(addr) => self.program_counter = addr,
             }
 
             // Update Timers
@@ -524,7 +521,7 @@ impl Cpu {
         }
 
         let display = self.display.clone();
-        
+
         // Render Display
         OutputState {
             display: display,
