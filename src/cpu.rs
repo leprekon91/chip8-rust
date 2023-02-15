@@ -1,7 +1,7 @@
 use rand;
 use rand::Rng;
 
-use font;
+use crate::font;
 use font::FONT_SET;
 
 use std::{thread, time};
