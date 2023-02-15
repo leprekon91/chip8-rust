@@ -1,14 +1,10 @@
 use rand;
 use rand::Rng;
 
-use display;
 use font;
-use stack;
-use std::{thread, time};
-
-use display::Display;
 use font::FONT_SET;
-use stack::Stack;
+
+use std::{thread, time};
 
 const MEMORY_SIZE: usize = 4096;
 
@@ -27,14 +23,15 @@ pub struct Cpu {
     memory: [u8; MEMORY_SIZE],
     v_registers: [u8; REGISTER_COUNT], // V0 - VF
     index_register: u16,
-    program_counter: u16,
-    stack: Stack<u16>,
+    program_counter: usize,
+    stack: [usize; 16],
+    stack_pointer: usize,
     delay_timer: u8,
     sound_timer: u8,
     keypad: [bool; 16],
     keypad_waiting: bool,
     keypad_register: usize,
-    display: Display,
+    display: [[u8; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
     display_changed: bool,
 }
 
@@ -48,7 +45,7 @@ enum PcInstructions {
 }
 
 struct OutputState {
-    display: Display,
+    display: [[u8; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
     display_changed: bool,
     beep: bool,
 }
@@ -77,21 +74,22 @@ impl Cpu {
             memory,
             v_registers: [0; REGISTER_COUNT], // V0 - VF init to 0
             index_register: 0,
-            program_counter: PROGRAM_START as u16,
-            stack: Vec::new(),
+            program_counter: PROGRAM_START as usize,
+            stack: [0; 16],
+            stack_pointer: 0,
             delay_timer: 0,
             sound_timer: 0,
             keypad: [false; 16],
             keypad_waiting: false,
             keypad_register: 0,
-            display: Display::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), // 64x32 display init to 0 (clear)
+            display: [[0; DISPLAY_WIDTH]; DISPLAY_HEIGHT], // 64x32 display init to 0 (clear)
             display_changed: false,
         }
     }
 
     pub fn load_program(&mut self, program: &[u8]) {
         for (i, &byte) in program.iter().enumerate() {
-            if (i >= MEMORY_SIZE - PROGRAM_START) {
+            if i >= MEMORY_SIZE - PROGRAM_START {
                 panic!("Program too large to fit in memory");
             }
 
@@ -172,7 +170,11 @@ impl Cpu {
 
     // CLS: Clear the display.
     fn op_00e0(&self) -> PcInstructions {
-        self.display.clear();
+        for y in 0..DISPLAY_HEIGHT {
+            for x in 0..DISPLAY_WIDTH {
+                self.display[y][x] = 0;
+            }
+        }
         self.display_changed = true;
         PcInstructions::Next
     }
@@ -180,8 +182,8 @@ impl Cpu {
     // RET: Return from a subroutine.
     // The interpreter sets the program counter to the address at the top of the stack, then subtracts 1 from the stack pointer.
     fn op_00ee(&mut self) -> PcInstructions {
-        let addr = self.stack.pop();
-        PcInstructions::Jump(addr)
+        self.stack_pointer -= 1;
+        PcInstructions::Jump(self.stack[self.stack_pointer])
     }
 
     // JP addr: Jump to location nnn.
@@ -193,7 +195,8 @@ impl Cpu {
     // CALL addr: Call subroutine at nnn.
     // The interpreter pushes the current PC to the stack. The PC is then set to nnn.
     fn op_2nnn(&mut self, nnn: u16) -> PcInstructions {
-        self.stack.push(self.program_counter);
+        self.stack[self.stack_pointer] = self.program_counter + (OPCODE_SIZE);
+        self.stack_pointer += 1;
         PcInstructions::Jump(nnn.into())
     }
 
@@ -307,7 +310,7 @@ impl Cpu {
     // SHR Vx {, Vy}: Set registers[x] = registers[x] SHR 1. (Shift Right)
     // If the least-significant bit of registers[x] is 1, then VF is set to 1, otherwise 0.
     // Then registers[x] is divided by 2.
-    fn op_8xy6(&mut self, x: usize, _y: usize) -> PcInstructions {
+    fn op_8x06(&mut self, x: usize) -> PcInstructions {
         self.v_registers[0xF] = self.v_registers[x] & 0x1;
         self.v_registers[x] >>= 1;
 
@@ -331,7 +334,7 @@ impl Cpu {
     // SHL Vx {, Vy}: Set registers[x] = registers[x] SHL 1. (Shift Left)
     // If the most-significant bit of registers[x] is 1, then VF is set to 1, otherwise to 0.
     // Then registers[x] is multiplied by 2.
-    fn op_8xye(&mut self, x: usize, _y: usize) -> PcInstructions {
+    fn op_8x0e(&mut self, x: usize) -> PcInstructions {
         self.v_registers[0xF] = self.v_registers[x] >> 7;
         self.v_registers[x] <<= 1;
 
@@ -381,20 +384,14 @@ impl Cpu {
     // the coordinates of the display, it wraps around to the opposite side
     // of the screen.
     fn op_dxyn(&mut self, x: usize, y: usize, n: usize) -> PcInstructions {
-        self.v_registers[0xF] = 0;
+        self.v_registers[0x0f] = 0;
         for byte in 0..n {
-            let sprite_byte = self.memory[self.index_register as usize + byte];
+            let y = (self.v_registers[y] as usize + byte) % DISPLAY_HEIGHT;
             for bit in 0..8 {
-                let x_coord = (self.v_registers[x] as usize + bit) % DISPLAY_WIDTH;
-                let y_coord = (self.v_registers[y] as usize + byte) % DISPLAY_HEIGHT;
-                let pixel = self.display.get_pixel(x_coord, y_coord);
-                let sprite_pixel = sprite_byte & (0x80 >> bit);
-                if sprite_pixel != 0 {
-                    if pixel == 1 {
-                        self.v_registers[0xF] = 1;
-                    }
-                    self.display.set_pixel(x_coord, y_coord, pixel ^ 1);
-                }
+                let x = (self.v_registers[x] as usize + bit) % DISPLAY_WIDTH;
+                let color = (self.memory[self.index_register + byte] >> (7 - bit)) & 1;
+                self.v_registers[0x0f] |= color & self.display[y][x];
+                self.display[y][x] ^= color;
             }
         }
 
@@ -526,9 +523,11 @@ impl Cpu {
             }
         }
 
+        let display = self.display.clone();
+        
         // Render Display
         OutputState {
-            display: &self.display,
+            display: display,
             display_changed: self.display_changed,
             beep: self.sound_timer > 0,
         }
